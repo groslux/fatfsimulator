@@ -146,7 +146,7 @@ if check_password():
 
         if st.button("Clear Session"):
             del st.session_state.simulation_data
-            st.rerun()import streamlit as st
+            st.rerun()
 import google.generativeai as genai
 import pycountry
 
