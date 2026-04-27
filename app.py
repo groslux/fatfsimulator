@@ -1,4 +1,3 @@
-
 import streamlit as st
 import google.generativeai as genai
 
@@ -56,13 +55,22 @@ def check_password():
 # --- AI SIMULATION LOGIC ---
 def get_simulation_response(prompt):
     try:
-        # NOTE: Replace with your actual API key or use Streamlit secrets
+        # Retrieve the API key from Streamlit secrets
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        
+        # Using the standard, stable model name
         model = genai.GenerativeModel('gemini-1.5-flash')
+        
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Connection error with the virtual assessor: {str(e)}"
+        # If flash fails, fallback to the older stable pro model automatically
+        try:
+            fallback_model = genai.GenerativeModel('gemini-pro')
+            response = fallback_model.generate_content(prompt)
+            return response.text
+        except Exception as fallback_error:
+            return f"Connection error with the virtual assessor. Primary error: {str(e)}. Fallback error: {str(fallback_error)}"
 
 # --- MAIN INTERFACE ---
 if check_password():
@@ -147,7 +155,6 @@ if check_password():
         selected_io = st.selectbox("Consult an Immediate Outcome", list(IO_TAXONOMY.keys()))
         st.write(f"### {selected_io} : {IO_TAXONOMY[selected_io]}")
         st.info("According to the FATF Methodology, this IO evaluates whether the system is achieving the expected results (Outcomes). Effectiveness is measured by concrete results, not just technical compliance (laws on the books).")
-        st.write("*(You can add specific FATF methodology text here later to act as a quick-reference guide for your team.)*")
 
 # --- FOOTER ---
 st.sidebar.markdown("---")
