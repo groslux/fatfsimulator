@@ -1,18 +1,19 @@
 import streamlit as st
 import google.generativeai as genai
+import pycountry
 
 # --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="FATF Simulator - NCA Readiness", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="FATF Simulator - One-Click Readiness", page_icon="⚖️", layout="wide")
 
 # --- CUSTOM CSS ---
 st.markdown("""
 <style>
-    .reportview-container { background: #f0f2f6; }
-    .stChatMessage { border-radius: 15px; margin-bottom: 10px; }
+    .stButton>button { width: 100%; font-weight: bold; background-color: #0e1117; color: white; }
+    .stChatMessage { border-radius: 10px; margin-bottom: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- FATF OFFICIAL TAXONOMY ---
+# --- COMPLETE FATF TAXONOMY ---
 IO_TAXONOMY = {
     "IO 1": "Risk, Policy and Coordination",
     "IO 2": "International Cooperation",
@@ -27,14 +28,27 @@ IO_TAXONOMY = {
     "IO 11": "PF Financial Sanctions"
 }
 
-SECTOR_TAXONOMY = [
-    "Banks", "Money Value Transfer Services (MVTS)", "VASPs (Crypto-assets)", 
-    "Life Insurance", "Casinos & Gambling", "Real Estate Agents", 
-    "Dealers in Precious Metals and Stones (DPMS)", "Lawyers & Notaries", 
-    "Trust & Company Service Providers (TCSPs)", "Accountants"
+# Complete FATF Sector List (FI, DNFBP, VASP)
+COMPLETE_SECTORS = [
+    "Banks", 
+    "Building Societies / Credit Unions",
+    "Securities Broker-Dealers", 
+    "Life Insurance Companies",
+    "Money Value Transfer Services (MVTS)", 
+    "Foreign Exchange / Currency Exchange",
+    "Casinos (Physical, Internet, Ship-based)", 
+    "Real Estate Agents",
+    "Dealers in Precious Metals and Stones (DPMS)", 
+    "Lawyers & Notaries",
+    "Accountants", 
+    "Trust & Company Service Providers (TCSPs)",
+    "Virtual Asset Service Providers (VASPs)"
 ]
 
-# --- AUTHENTICATION SYSTEM ---
+# Generate global country list
+ALL_COUNTRIES = sorted([country.name for country in pycountry.countries])
+
+# --- AUTHENTICATION ---
 def check_password():
     if "auth" not in st.session_state:
         st.session_state["auth"] = False
@@ -52,110 +66,81 @@ def check_password():
         return False
     return True
 
-# --- AI SIMULATION LOGIC ---
-def get_simulation_response(prompt):
+# --- AI LOGIC ---
+def generate_simulation(prompt):
     try:
-        # Retrieve the API key from Streamlit secrets
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        
-        # Using the standard, stable model name
         model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        response = model.generate_content(prompt)
-        return response.text
+        return model.generate_content(prompt).text
     except Exception as e:
-        # If flash fails, fallback to the older stable pro model automatically
         try:
-            fallback_model = genai.GenerativeModel('gemini-pro')
-            response = fallback_model.generate_content(prompt)
-            return response.text
+            fallback = genai.GenerativeModel('gemini-pro')
+            return fallback.generate_content(prompt).text
         except Exception as fallback_error:
-            return f"Connection error with the virtual assessor. Primary error: {str(e)}. Fallback error: {str(fallback_error)}"
+            return f"API Error: {str(e)} | {str(fallback_error)}"
 
-# --- MAIN INTERFACE ---
+# --- MAIN ONE-PAGE APP ---
 if check_password():
-    st.sidebar.title("🎮 FATF Simulator v1.0")
-    st.sidebar.markdown("---")
-    
-    app_mode = st.sidebar.selectbox("Select Module", ["Configuration", "Active Simulation", "Methodology Guide"])
+    st.title("🎮 FATF Mutual Evaluation Simulator")
+    st.write("Select your parameters below and generate an on-site interview scenario in one click.")
+    st.divider()
 
-    if app_mode == "Configuration":
-        st.header("🎯 Mutual Evaluation Preparation")
-        st.write("Configure the inspection scenario. The AI will generate a challenge based on OSINT and the FATF methodology.")
-        
-        with st.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                country = st.selectbox("Assessed Country", ["Luxembourg", "France", "United Kingdom", "Singapore", "United States", "UAE"])
-                sector = st.selectbox("Targeted Sector", SECTOR_TAXONOMY)
-            with col2:
-                io_key = st.selectbox("Immediate Outcome (IO)", list(IO_TAXONOMY.keys()))
-                io_desc = IO_TAXONOMY[io_key]
-                st.info(f"**Focus:** {io_desc}")
+    # --- 1. CONFIGURATION BLOCK ---
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        selected_country = st.selectbox("Assessed Country", ALL_COUNTRIES, index=ALL_COUNTRIES.index("Luxembourg") if "Luxembourg" in ALL_COUNTRIES else 0)
+    with c2:
+        selected_sector = st.selectbox("Targeted Sector", COMPLETE_SECTORS)
+    with c3:
+        # Multiselect allows 1 or multiple IOs at the same time
+        selected_ios = st.multiselect("Immediate Outcome(s)", list(IO_TAXONOMY.keys()), default=["IO 3"])
 
-        if st.button("🚀 Start Assessor Interview"):
-            st.session_state.current_scenario = {
-                "country": country,
-                "sector": sector,
-                "io": io_key,
-                "io_desc": io_desc
-            }
-            
-            # Prompt for the Assessor (The Challenger)
-            prompt_assessor = f"""
-            You are a strict and rigorous FATF assessor. You are evaluating the country {country} on {io_key} ({io_desc}).
-            Your focus is the following sector: {sector}.
-            Conduct a mental OSINT search regarding recent AML/CFT risks, scandals, or typologies in this country for this sector.
-            Ask a very precise, technical, and slightly challenging 'On-site visit' question to the NCA representative. 
-            Demand evidence of effectiveness (statistics, examples of enforcement), not just legislative framework.
-            Keep your answer short (maximum 4 sentences) and direct.
-            """
-            st.session_state.assessor_q = get_simulation_response(prompt_assessor)
-            
-            # Prompt for the Advisor (The Strategist)
-            prompt_advisor = f"""
-            You are the strategic advisor for the National Competent Authority (NCA). The FATF assessor just asked this question: '{st.session_state.assessor_q}'.
-            Analyze the question strictly through the lens of the FATF methodology for {io_key}. 
-            Provide 3 tactical tips on how the NCA representative should answer:
-            1. What specific statistical data or evidence should they prepare?
-            2. What key message should they deliver to demonstrate 'effectiveness' (Outcomes)?
-            3. What trap or defensive stance should they avoid in their response?
-            Do not provide or ask for actual confidential information. Be professional and actionable.
-            """
-            st.session_state.advisor_tips = get_simulation_response(prompt_advisor)
-            
-            st.session_state.step = "active"
-            st.rerun()
-
-    elif app_mode == "Active Simulation":
-        if "current_scenario" not in st.session_state:
-            st.warning("Please configure a scenario first in the 'Configuration' tab.")
+    # --- 2. GENERATION TRIGGER ---
+    if st.button("🚀 Launch FATF Interview Simulation"):
+        if not selected_ios:
+            st.error("Please select at least one Immediate Outcome.")
         else:
-            scen = st.session_state.current_scenario
-            st.subheader(f"Session: {scen['country']} | {scen['io']} | {scen['sector']}")
-            
-            # Display Assessor Output
-            with st.chat_message("user", avatar="🕵️"):
-                st.markdown("**FATF ASSESSOR** (Lead Evaluator)")
-                st.write(st.session_state.assessor_q)
-            
-            st.markdown("---")
-            
-            # Display Advisor Output
-            with st.chat_message("assistant", avatar="💡"):
-                st.markdown("**NCA ADVISOR** (Strategic Counsel)")
-                st.write(st.session_state.advisor_tips)
-                
-            if st.button("🔄 Generate Next Question"):
-                del st.session_state.current_scenario
-                st.rerun()
+            with st.spinner("Connecting to Virtual Assessor and Advisor..."):
+                io_descriptions = [f"{io} ({IO_TAXONOMY[io]})" for io in selected_ios]
+                io_string = ", ".join(io_descriptions)
 
-    elif app_mode == "Methodology Guide":
-        st.header("📚 Methodology Reference")
-        selected_io = st.selectbox("Consult an Immediate Outcome", list(IO_TAXONOMY.keys()))
-        st.write(f"### {selected_io} : {IO_TAXONOMY[selected_io]}")
-        st.info("According to the FATF Methodology, this IO evaluates whether the system is achieving the expected results (Outcomes). Effectiveness is measured by concrete results, not just technical compliance (laws on the books).")
+                # Generate Assessor Question
+                prompt_assessor = f"""
+                You are a strict FATF assessor evaluating {selected_country}.
+                The focus is the sector: '{selected_sector}' and the following Immediate Outcomes: {io_string}.
+                Do a mental OSINT search on recent AML/CFT vulnerabilities for this sector in this country.
+                Ask one highly specific, difficult 'On-site visit' question directed at the regulator (NCA).
+                Demand proof of effectiveness (Outcomes), not just laws. Keep it under 4 sentences.
+                """
+                assessor_output = generate_simulation(prompt_assessor)
 
-# --- FOOTER ---
-st.sidebar.markdown("---")
-st.sidebar.caption("Sovereign Readiness Tool - FATF Simulator v1.0")
+                # Generate Advisor Strategy
+                prompt_advisor = f"""
+                You are the NCA Strategic Advisor. The FATF assessor just asked the NCA this question: "{assessor_output}"
+                Based on the FATF methodology for {io_string}, provide 3 bullet points on how to answer:
+                1. What specific statistics/evidence to show.
+                2. What outcome/effectiveness message to highlight.
+                3. A defensive trap to avoid.
+                Be direct and actionable. Do not invent confidential data.
+                """
+                advisor_output = generate_simulation(prompt_advisor)
+
+                # Save to session state to prevent it from disappearing
+                st.session_state.simulation_data = {
+                    "assessor": assessor_output,
+                    "advisor": advisor_output,
+                    "context": f"{selected_country} | {selected_sector} | {', '.join(selected_ios)}"
+                }
+
+    # --- 3. RESULTS DISPLAY ---
+    if "simulation_data" in st.session_state:
+        st.divider()
+        st.subheader(f"📌 Active Session: {st.session_state.simulation_data['context']}")
+        
+        with st.chat_message("user", avatar="🕵️"):
+            st.markdown("**FATF ASSESSOR** (Lead Evaluator)")
+            st.write(st.session_state.simulation_data["assessor"])
+        
+        with st.chat_message("assistant", avatar="💡"):
+            st.markdown("**NCA STRATEGIC ADVISOR** (Your Internal Counsel)")
+            st.write(st.session_state.simulation_data["advisor"])
