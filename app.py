@@ -91,11 +91,28 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. ENRICHED AI CALL FUNCTION ---
+# --- 4. ENRICHED AI CALL WITH DYNAMIC MODEL SELECTION ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # Using 1.5-flash as it is fast, cheap, and excellent at strict JSON structure
-    model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+    # DYNAMIC SEARCH: Ask Google which models are actually allowed for your API key
+    selected_model_name = "gemini-pro" # Ultimate fallback
+    try:
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                valid_models.append(m.name)
+                
+        if valid_models:
+            # Prioritize models: flash first, then pro versions
+            for preferred in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']:
+                matches = [name for name in valid_models if preferred in name]
+                if matches:
+                    selected_model_name = matches[0]
+                    break
+    except Exception:
+        pass # Silently proceed with fallback if listing fails
+
+    model = genai.GenerativeModel(model_name=selected_model_name)
     
     prompt = f"""
     You are a highly demanding senior FATF assessor conducting an On-Site Visit based strictly on the official FATF Methodology.
@@ -142,6 +159,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         return data
     except Exception as e:
         st.error(f"Error communicating with AI: {e}")
+        st.info(f"Model tried: {selected_model_name}")
         return None
 
 # --- 5. UI: HOME & DESIGN ---
@@ -220,48 +238,4 @@ elif st.session_state.step == "interview":
             st.rerun()
 
 # --- UI STEP 3: FEEDBACK ---
-elif st.session_state.step == "feedback":
-    q = st.session_state.current_question
-    user_choice = st.session_state.user_choice
-    is_correct = user_choice == q['correct_option']
-    
-    st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    
-    st.subheader("📊 Assessor Debriefing & Findings")
-    
-    if is_correct:
-        st.success(f"✅ **Strong Posture!** You selected Option {user_choice}.")
-    else:
-        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected answer was **{q['correct_option']}**.")
-        
-    st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
-    
-    # Enriched Statistical Feedback
-    st.warning(f"**📉 Statistical / Typological Reality Check:**\n\n{q.get('statistical_insight', 'N/A')}")
-    
-    # The Follow-up Questions (Crucial for FATF prep)
-    st.markdown("### 🗣️ Anticipated Follow-Up Questions from the Assessment Team:")
-    for fq in q.get('follow_up_questions', []):
-        st.markdown(f"> *\"{fq}\"*")
-        
-    st.write("---")
-    
-    col_nav1, col_nav2 = st.columns(2)
-    with col_nav1:
-        if st.button("Next Question on this Topic ➡️", use_container_width=True):
-            with st.spinner("The assessor consults their notes for the next angle..."):
-                ctx = st.session_state.current_context
-                question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
-                if question_data:
-                    st.session_state.current_question = question_data
-                    st.session_state.step = "interview"
-                    st.session_state.user_choice = None
-                    st.rerun()
-                    
-    with col_nav2:
-        if st.button("Change Scope / Exit 🛑", use_container_width=True):
-            st.session_state.step = "setup"
-            st.session_state.current_question = None
-            st.session_state.score = 0
-            st.session_state.total_questions = 0
-            st.rerun()
+elif st.session_state
