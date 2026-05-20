@@ -95,11 +95,31 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. AI CALL FUNCTION (BULLETPROOF LEGACY VERSION) ---
+# --- 4. DYNAMIC MODEL SELECTION & AI CALL ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # We use gemini-pro because it is guaranteed to exist on all API versions
-    model = genai.GenerativeModel(model_name="gemini-pro")
+    # DYNAMIC SEARCH: Ask Google which models are actually allowed for your API key
+    selected_model_name = "models/gemini-1.5-flash" # Default fallback
+    try:
+        valid_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                valid_models.append(m.name)
+                
+        if valid_models:
+            # Prioritize 1.5-flash, then 1.5-pro, then 1.0-pro, then whatever is available
+            for preferred in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']:
+                matches = [name for name in valid_models if preferred in name]
+                if matches:
+                    selected_model_name = matches[0]
+                    break
+            else:
+                selected_model_name = valid_models[0] # Grab the first working model if priorities fail
+    except Exception as e:
+        st.warning("Could not list models dynamically, attempting fallback...")
+
+    # Initialize the model with the guaranteed working name
+    model = genai.GenerativeModel(model_name=selected_model_name)
     
     prompt = f"""
     You are a highly demanding senior FATF assessor conducting an On-Site Visit based strictly on the official FATF Methodology.
@@ -134,21 +154,17 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     """
     
     try:
-        # Generate the content without the response_mime_type config to avoid crashing older libraries
         response = model.generate_content(prompt)
-        
         # Manually clean up any markdown the model might accidentally include
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
-        
-        # Parse the JSON string
         data = json.loads(clean_text)
         return data
         
     except Exception as e:
         st.error(f"Error communicating with AI: {e}")
-        # Show the raw text if parsing failed to help with debugging
+        st.info(f"Diagnostique: Le modèle utilisé était '{selected_model_name}'. Vérifiez que votre API Key a les droits sur ce modèle.")
         if 'response' in locals() and hasattr(response, 'text'):
-             with st.expander("Show AI Raw Output (for debugging)"):
+             with st.expander("Voir la réponse brute de l'IA (Debug)"):
                  st.write(response.text)
         return None
 
