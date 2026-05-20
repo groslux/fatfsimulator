@@ -1,6 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
 import json
+import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -11,29 +12,20 @@ st.set_page_config(
 
 # --- FATF METHODOLOGY CONSTANTS ---
 SECTORS = [
-    # Financial Institutions
     "Banking", "Life Insurance", "Securities & Investment Management", 
     "Money Value Transfer Services (MVTS) / Remittances", "Currency Exchange / Bureaux de Change",
-    # VASPs
     "Virtual Asset Service Providers (VASPs)",
-    # DNFBPs (Designated Non-Financial Businesses and Professions)
     "Casinos & Gaming", "Real Estate Agents", "Dealers in Precious Metals and Stones (DPMS)", 
     "Lawyers & Notaries", "Accountants & Auditors", "Trust and Company Service Providers (TCSPs)",
-    # Others
     "Non-Profit Organisations (NPOs)"
 ]
 
 FATF_IOS = [
-    "IO.1 - Risk, Policy and Coordination",
-    "IO.2 - International Cooperation",
-    "IO.3 - Supervision",
-    "IO.4 - Preventive Measures",
-    "IO.5 - Legal Persons and Arrangements",
-    "IO.6 - Financial Intelligence",
-    "IO.7 - ML Investigation and Prosecution",
-    "IO.8 - Confiscation",
-    "IO.9 - TF Investigation and Prosecution",
-    "IO.10 - TF Preventive Measures and Financial Sanctions",
+    "IO.1 - Risk, Policy and Coordination", "IO.2 - International Cooperation",
+    "IO.3 - Supervision", "IO.4 - Preventive Measures",
+    "IO.5 - Legal Persons and Arrangements", "IO.6 - Financial Intelligence",
+    "IO.7 - ML Investigation and Prosecution", "IO.8 - Confiscation",
+    "IO.9 - TF Investigation and Prosecution", "IO.10 - TF Preventive Measures and Financial Sanctions",
     "IO.11 - PF Financial Sanctions"
 ]
 
@@ -68,7 +60,6 @@ if not st.session_state.authenticated:
     st.title("🔒 Restricted Access")
     st.write("Welcome to the FATF Assessor AI. Please enter the password to continue.")
     
-    # Form to handle "Enter" key press naturally
     with st.form("login_form"):
         pwd = st.text_input("Password:", type="password")
         submitted = st.form_submit_button("Login")
@@ -80,7 +71,7 @@ if not st.session_state.authenticated:
             else:
                 st.error("❌ Incorrect password.")
                 
-    st.stop() # Blocks execution of the rest of the app until authenticated
+    st.stop() 
 
 # --- 2. GEMINI API INITIALIZATION ---
 try:
@@ -104,13 +95,11 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. AI CALL FUNCTION (WITHOUT WEB SEARCH) ---
+# --- 4. AI CALL FUNCTION (BULLETPROOF LEGACY VERSION) ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # Using 'gemini-pro' as it is the most universally supported model name for text generation
-    model = genai.GenerativeModel(
-        model_name="gemini-pro"
-    )
+    # We use gemini-pro because it is guaranteed to exist on all API versions
+    model = genai.GenerativeModel(model_name="gemini-pro")
     
     prompt = f"""
     You are a highly demanding senior FATF assessor conducting an On-Site Visit based strictly on the official FATF Methodology.
@@ -129,7 +118,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
        - The CORRECT option must demonstrate true {eval_type} according to the FATF text (e.g., proactive risk management, proven outcomes, or perfect legal alignment).
        - The INCORRECT options should represent common FATF evaluation failings (e.g., relying solely on legislation without implementation, lack of resources, defensive but empty statements).
 
-    RESPOND ONLY IN THE FOLLOWING JSON FORMAT (without ```json tags):
+    RESPOND EXCLUSIVELY IN VALID JSON FORMAT. Do not include Markdown blocks (like ```json). Just the raw JSON object:
     {{
         "fatf_reference": "{specific_focus}",
         "question": "The assessor's specific, challenging question...",
@@ -139,20 +128,28 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
             "C": "Option C text"
         }},
         "correct_option": "A", 
-        "explanation": "Detailed explanation citing the FATF methodology on why this option is correct and why the others fail.",
-        "additional_data": "A realistic example of a statistic, typology, or known risk relevant to this scenario to back up your point."
+        "explanation": "Detailed explanation citing the FATF methodology on why this option is correct.",
+        "additional_data": "A realistic example of a statistic, typology, or known risk relevant to this scenario."
     }}
     """
     
     try:
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        data = json.loads(response.text)
+        # Generate the content without the response_mime_type config to avoid crashing older libraries
+        response = model.generate_content(prompt)
+        
+        # Manually clean up any markdown the model might accidentally include
+        clean_text = response.text.replace('```json', '').replace('```', '').strip()
+        
+        # Parse the JSON string
+        data = json.loads(clean_text)
         return data
+        
     except Exception as e:
-        st.error(f"Generation error: {e}")
+        st.error(f"Error communicating with AI: {e}")
+        # Show the raw text if parsing failed to help with debugging
+        if 'response' in locals() and hasattr(response, 'text'):
+             with st.expander("Show AI Raw Output (for debugging)"):
+                 st.write(response.text)
         return None
 
 # --- 5. UI: HOME & DESIGN ---
@@ -179,10 +176,9 @@ if st.session_state.step == "setup":
         specific_focus = st.selectbox("Select Recommendation", FATF_RECS)
 
     st.write("---")
-    # THE FIX: Added the closing parenthesis ')' here
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
         with st.spinner("The assessor is reviewing the methodology and preparing the scenario..."):
-            # Save context for next questions
+            
             st.session_state.current_context = {
                 "country": country, "sector": sector, 
                 "eval_type": eval_type, "specific_focus": specific_focus
@@ -220,45 +216,4 @@ elif st.session_state.step == "interview":
             st.session_state.user_choice = formatted_options[choice]
             st.session_state.step = "feedback"
             st.session_state.total_questions += 1
-            if st.session_state.user_choice == q['correct_option']:
-                st.session_state.score += 1
-            st.rerun()
-
-# --- UI STEP 3: FEEDBACK ---
-elif st.session_state.step == "feedback":
-    q = st.session_state.current_question
-    user_choice = st.session_state.user_choice
-    is_correct = user_choice == q['correct_option']
-    
-    st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    st.subheader("📊 Assessor Debriefing")
-    
-    if is_correct:
-        st.success(f"✅ **Strong Posture!** You selected Option {user_choice}.")
-    else:
-        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
-        
-    st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
-    st.markdown("### 🌐 Contextual Insight:")
-    st.warning(q['additional_data'])
-    st.write("---")
-    
-    col_nav1, col_nav2 = st.columns(2)
-    with col_nav1:
-        if st.button("Next Question on this Topic ➡️", use_container_width=True):
-            with st.spinner("The assessor pivots to another angle..."):
-                ctx = st.session_state.current_context
-                question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
-                if question_data:
-                    st.session_state.current_question = question_data
-                    st.session_state.step = "interview"
-                    st.session_state.user_choice = None
-                    st.rerun()
-                    
-    with col_nav2:
-        if st.button("Change Scope / Exit 🛑", use_container_width=True):
-            st.session_state.step = "setup"
-            st.session_state.current_question = None
-            st.session_state.score = 0
-            st.session_state.total_questions = 0
-            st.rerun()
+            if st.session_state.user_choice
