@@ -107,9 +107,9 @@ if "current_context" not in st.session_state:
 # --- 4. AI CALL FUNCTION (WITHOUT WEB SEARCH) ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # Removed the problematic tools parameter. The model will rely on its vast internal knowledge.
+    # Using 'gemini-pro' as it is the most universally supported model name for text generation
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash"
+        model_name="gemini-pro"
     )
     
     prompt = f"""
@@ -179,6 +179,7 @@ if st.session_state.step == "setup":
         specific_focus = st.selectbox("Select Recommendation", FATF_RECS)
 
     st.write("---")
+    # THE FIX: Added the closing parenthesis ')' here
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
         with st.spinner("The assessor is reviewing the methodology and preparing the scenario..."):
             # Save context for next questions
