@@ -104,12 +104,12 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. AI CALL FUNCTION (WITH WEB SEARCH) ---
+# --- 4. AI CALL FUNCTION (WITHOUT WEB SEARCH) ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
-    # Requires google-generativeai >= 0.8.0
+    
+    # Removed the problematic tools parameter. The model will rely on its vast internal knowledge.
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        tools="google_search" 
+        model_name="gemini-1.5-flash"
     )
     
     prompt = f"""
@@ -119,13 +119,12 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     Evaluation Type: {eval_type}.
     Specific Focus: {specific_focus}.
 
-    CONTEXT AND OPERATIONAL RESEARCH (Google Search):
-    1. Search the web for recent data, national risk assessments (NRA), FIU annual reports, supervisory activity, sanctions, or press coverage related to AML/CFT for this sector in {country}.
-    2. Extract concrete statistics, real-world events, or regulatory updates to use in your assessment.
+    CONTEXT:
+    Draw upon your extensive knowledge of AML/CFT typologies, known vulnerabilities for this specific sector, and the general risk profile of {country}.
 
     TASK:
     1. Generate an incisive and challenging question directly targeting the core issues of {specific_focus}.
-    2. Use the real-world OSINT data you found to corner the local authorities/professionals. 
+    2. Ground the question in realistic scenarios, statistics, or common regulatory failings relevant to the chosen sector and country.
     3. Provide 3 realistic response options (A, B, C) that a country's representative might give.
        - The CORRECT option must demonstrate true {eval_type} according to the FATF text (e.g., proactive risk management, proven outcomes, or perfect legal alignment).
        - The INCORRECT options should represent common FATF evaluation failings (e.g., relying solely on legislation without implementation, lack of resources, defensive but empty statements).
@@ -133,7 +132,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     RESPOND ONLY IN THE FOLLOWING JSON FORMAT (without ```json tags):
     {{
         "fatf_reference": "{specific_focus}",
-        "question": "The assessor's specific, data-backed question...",
+        "question": "The assessor's specific, challenging question...",
         "options": {{
             "A": "Option A text",
             "B": "Option B text",
@@ -141,7 +140,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         }},
         "correct_option": "A", 
         "explanation": "Detailed explanation citing the FATF methodology on why this option is correct and why the others fail.",
-        "additional_data": "Concrete OSINT facts or statistics found during the web search."
+        "additional_data": "A realistic example of a statistic, typology, or known risk relevant to this scenario to back up your point."
     }}
     """
     
@@ -158,7 +157,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
 
 # --- 5. UI: HOME & DESIGN ---
 st.title("⚖️ FATF Assessor AI - Professional Simulator")
-st.write("Train against a rigorous AI assessor utilizing the full FATF methodology and real-time OSINT.")
+st.write("Train against a rigorous AI assessor utilizing the full FATF methodology.")
 
 # --- UI STEP 1: CONTEXT SETUP ---
 if st.session_state.step == "setup":
@@ -181,7 +180,7 @@ if st.session_state.step == "setup":
 
     st.write("---")
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
-        with st.spinner("The assessor is reviewing the methodology and consulting open sources..."):
+        with st.spinner("The assessor is reviewing the methodology and preparing the scenario..."):
             # Save context for next questions
             st.session_state.current_context = {
                 "country": country, "sector": sector, 
@@ -239,7 +238,7 @@ elif st.session_state.step == "feedback":
         st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
         
     st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
-    st.markdown("### 🌐 Real-time OSINT Data Used against you:")
+    st.markdown("### 🌐 Contextual Insight:")
     st.warning(q['additional_data'])
     st.write("---")
     
