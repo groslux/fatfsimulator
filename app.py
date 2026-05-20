@@ -180,4 +180,64 @@ if st.session_state.step == "setup":
         specific_focus = st.selectbox("Select Recommendation", FATF_RECS)
 
     st.write("---")
-    if st.button("Start On-Site Interview 🚀", use
+    if st.button("Start On-Site Interview 🚀", use_container_width=True):
+        with st.spinner("The assessor is reviewing the methodology and consulting open sources..."):
+            # Save context for next questions
+            st.session_state.current_context = {
+                "country": country, "sector": sector, 
+                "eval_type": eval_type, "specific_focus": specific_focus
+            }
+            
+            question_data = fetch_assessor_question(country, sector, eval_type, specific_focus)
+            if question_data:
+                st.session_state.current_question = question_data
+                st.session_state.step = "interview"
+                st.session_state.user_choice = None
+                st.rerun()
+
+# --- UI STEP 2: THE INTERVIEW ---
+elif st.session_state.step == "interview":
+    q = st.session_state.current_question
+    
+    st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
+    st.subheader("📍 On-Site Interview Session")
+    st.caption(f"📘 **Methodology Focus:** {q.get('fatf_reference', 'N/A')}")
+    
+    st.info(f"**FATF Assessor:** \n\n *\"{q['question']}\"*")
+    st.write("---")
+    st.write("**Choose your official response strategy:**")
+    
+    with st.form(key="qcm_form"):
+        formatted_options = {
+            f"A: {q['options']['A']}": "A",
+            f"B: {q['options']['B']}": "B",
+            f"C: {q['options']['C']}": "C"
+        }
+        choice = st.radio("Options:", list(formatted_options.keys()), index=0)
+        submit_button = st.form_submit_button(label="Submit Official Response 📝")
+        
+        if submit_button:
+            st.session_state.user_choice = formatted_options[choice]
+            st.session_state.step = "feedback"
+            st.session_state.total_questions += 1
+            if st.session_state.user_choice == q['correct_option']:
+                st.session_state.score += 1
+            st.rerun()
+
+# --- UI STEP 3: FEEDBACK ---
+elif st.session_state.step == "feedback":
+    q = st.session_state.current_question
+    user_choice = st.session_state.user_choice
+    is_correct = user_choice == q['correct_option']
+    
+    st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
+    st.subheader("📊 Assessor Debriefing")
+    
+    if is_correct:
+        st.success(f"✅ **Strong Posture!** You selected Option {user_choice}.")
+    else:
+        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
+        
+    st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
+    st.markdown("### 🌐 Real-time OSINT Data Used against you:")
+    st.warning(q['additional_data
