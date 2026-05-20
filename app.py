@@ -216,4 +216,45 @@ elif st.session_state.step == "interview":
             st.session_state.user_choice = formatted_options[choice]
             st.session_state.step = "feedback"
             st.session_state.total_questions += 1
-            if st.session_state.user_choice
+            if st.session_state.user_choice == q['correct_option']:
+                st.session_state.score += 1
+            st.rerun()
+
+# --- UI STEP 3: FEEDBACK ---
+elif st.session_state.step == "feedback":
+    q = st.session_state.current_question
+    user_choice = st.session_state.user_choice
+    is_correct = user_choice == q['correct_option']
+    
+    st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
+    st.subheader("📊 Assessor Debriefing")
+    
+    if is_correct:
+        st.success(f"✅ **Strong Posture!** You selected Option {user_choice}.")
+    else:
+        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
+        
+    st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
+    st.markdown("### 🌐 Contextual Insight:")
+    st.warning(q['additional_data'])
+    st.write("---")
+    
+    col_nav1, col_nav2 = st.columns(2)
+    with col_nav1:
+        if st.button("Next Question on this Topic ➡️", use_container_width=True):
+            with st.spinner("The assessor pivots to another angle..."):
+                ctx = st.session_state.current_context
+                question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
+                if question_data:
+                    st.session_state.current_question = question_data
+                    st.session_state.step = "interview"
+                    st.session_state.user_choice = None
+                    st.rerun()
+                    
+    with col_nav2:
+        if st.button("Change Scope / Exit 🛑", use_container_width=True):
+            st.session_state.step = "setup"
+            st.session_state.current_question = None
+            st.session_state.score = 0
+            st.session_state.total_questions = 0
+            st.rerun()
