@@ -1,161 +1,190 @@
 import streamlit as st
 import google.generativeai as genai
+import json
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="FATF Simulator - NCA Readiness", page_icon="⚖️", layout="wide")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(
+    page_title="GAFI Assessor AI - Simulateur d'Évaluation Mutuelle",
+    page_icon="🕵️‍♂️",
+    layout="wide"
+)
 
-# --- CUSTOM CSS ---
-st.markdown("""
-<style>
-    .reportview-container { background: #f0f2f6; }
-    .stChatMessage { border-radius: 15px; margin-bottom: 10px; }
-</style>
-""", unsafe_allow_html=True)
+# --- INITIALISATION DE L'API GEMINI ---
+# On récupère la clé API soit depuis les secrets de Streamlit (production), soit graphiquement
+api_key = st.sidebar.text_input("Clé API Google AI Studio (Gemini)", type="password")
 
-# --- FATF OFFICIAL TAXONOMY ---
-IO_TAXONOMY = {
-    "IO 1": "Risk, Policy and Coordination",
-    "IO 2": "International Cooperation",
-    "IO 3": "Supervision",
-    "IO 4": "Preventive Measures",
-    "IO 5": "Legal Persons and Arrangements",
-    "IO 6": "Financial Intelligence",
-    "IO 7": "ML Investigation and Prosecution",
-    "IO 8": "Confiscation",
-    "IO 9": "TF Investigation and Prosecution",
-    "IO 10": "TF Preventive Measures and Financial Sanctions",
-    "IO 11": "PF Financial Sanctions"
-}
+if api_key:
+    genai.configure(api_key=api_key)
+else:
+    st.sidebar.warning("Veuillez saisir votre clé API Gemini pour faire fonctionner l'application.")
 
-SECTOR_TAXONOMY = [
-    "Banks", "Money Value Transfer Services (MVTS)", "VASPs (Crypto-assets)", 
-    "Life Insurance", "Casinos & Gambling", "Real Estate Agents", 
-    "Dealers in Precious Metals and Stones (DPMS)", "Lawyers & Notaries", 
-    "Trust & Company Service Providers (TCSPs)", "Accountants"
-]
+# --- INITIALISATION DES ÉTATS DE SESSION ---
+if "step" not in st.session_state:
+    st.session_state.step = "setup"  # Éapes possibles : setup, interview, feedback
+if "current_question" not in st.session_state:
+    st.session_state.current_question = None
+if "score" not in st.session_state:
+    st.session_state.score = 0
+if "total_questions" not in st.session_state:
+    st.session_state.total_questions = 0
+if "user_choice" not in st.session_state:
+    st.session_state.user_choice = None
 
-# --- AUTHENTICATION SYSTEM ---
-def check_password():
-    if "auth" not in st.session_state:
-        st.session_state["auth"] = False
+# --- FONCTION D'APPEL À L'IA (AVEC RECHERCHE WEB EN TEMPS RÉEL) ---
+def fetch_assessor_question(country, sector, focus):
+    if not api_key:
+        return None
     
-    if not st.session_state["auth"]:
-        st.title("🛡️ FATF Simulator - Secure Access")
-        with st.form("login_form"):
-            pwd = st.text_input("NCA Network Password", type="password")
-            if st.form_submit_button("Login"):
-                if pwd == "AMLNetwork":
-                    st.session_state["auth"] = True
-                    st.rerun()
-                else:
-                    st.error("Access denied. Incorrect password.")
-        return False
-    return True
+    # Configuration du modèle avec Recherche Web activée (Grounding)
+    # et forçage du format de sortie en JSON
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        tools="google_search"  # Active la recherche en temps réel (presse, rapports nationaux...)
+    )
+    
+    prompt = f"""
+    Tu es un évaluateur (assessor) senior du GAFI lors d'une visite sur place (On-Site Visit) dans le pays suivant : {country}.
+    Tu évalues spécifiquement le secteur suivant : {sector}.
+    Ton focus principal actuel est : {focus}.
 
-# --- AI SIMULATION LOGIC ---
-def get_simulation_response(prompt):
+    CONTEXTE ET RECHERCHE OPÉRATIONNELLE :
+    1. Fais une recherche en ligne en temps réel sur l'actualité réglementaire, les récents scandales financiers, les rapports de la CRF (Renseignement financier), les sanctions du superviseur ou les articles de presse nationale/internationale liés au blanchiment d'argent (BC/FT) pour ce pays et ce secteur spécifique.
+    2. Identifie une vulnérabilité concrète ou une critique fréquente concernant l'efficacité (Effectiveness) ou la conformité technique (Technical Compliance).
+
+    TACHE :
+    Génère une question incisive et challengeante que tu poserais aux autorités ou aux professionnels sur place.
+    Propose ensuite 3 options de réponses réalistes (A, B, C) basées uniquement sur des données publiques ou des postures institutionnelles types.
+    - L'une des options doit être la réponse "idéale" du point de vue de l'évaluateur (elle apporte des preuves d'efficacité, des statistiques ou démontre une gestion du risque proactive).
+    - Les deux autres doivent être insuffisantes (ex: trop axées sur la loi papier sans preuve d'application, ou trop défensives).
+
+    RÉPONDRE UNIQUEMENT SOUS LE FORMAT JSON SUIVANT (sans aucun autre texte autour, sans balise ```json) :
+    {{
+        "question": "Le texte de ta question d'évaluateur, mentionnant un fait ou une exigence méthodologique précise...",
+        "options": {{
+            "A": "Texte complet de l'option A",
+            "B": "Texte complet de l'option B",
+            "C": "Texte complet de l'option C"
+        }},
+        "correct_option": "A", 
+        "explanation": "L'explication détaillée de pourquoi cette option est la meilleure selon les critères d'efficacité du GAFI.",
+        "additional_data": "Données statistiques réelles ou éléments OSINT complémentaires trouvés lors de ta recherche sur le web pour ce pays pour enrichir la réponse."
+    }}
+    """
+    
     try:
-        # Retrieve the API key from Streamlit secrets
-        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-        
-        # Using the standard, stable model name
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        response = model.generate_content(prompt)
-        return response.text
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        # Nettoyage et parsing du JSON
+        data = json.loads(response.text)
+        return data
     except Exception as e:
-        # If flash fails, fallback to the older stable pro model automatically
-        try:
-            fallback_model = genai.GenerativeModel('gemini-pro')
-            response = fallback_model.generate_content(prompt)
-            return response.text
-        except Exception as fallback_error:
-            return f"Connection error with the virtual assessor. Primary error: {str(e)}. Fallback error: {str(fallback_error)}"
+        st.error(f"Erreur lors de la génération : {e}")
+        return None
 
-# --- MAIN INTERFACE ---
-if check_password():
-    st.sidebar.title("🎮 FATF Simulator v1.0")
-    st.sidebar.markdown("---")
+# --- ACCUEIL ET DESIGN ---
+st.title("🕵️‍♂️ GAFI Assessor AI - Simulateur d'Évaluation")
+st.write("Défendez l'efficacité de votre dispositif de supervision face à un évaluateur du GAFI utilisant l'OSINT en temps réel.")
+
+# --- ÉTAPE 1 : CONFIGURATION DU CONTEXTE ---
+if st.session_state.step == "setup":
+    st.subheader("Configuration de la Simulation")
     
-    app_mode = st.sidebar.selectbox("Select Module", ["Configuration", "Active Simulation", "Methodology Guide"])
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        country = st.selectbox("Pays évalué", ["Luxembourg", "France", "Suisse", "Malte", "Émirats Arabes Unis", "Royaume-Uni"])
+    with col2:
+        sector = st.selectbox("Secteur de Supervision", ["Banques Privées / Gestion de Fortune", "Prestataires de Services d'Actifs Numériques (PSAN)", "Immobilier de Luxe", "Fiduciaires / TCSP", "Secteur des Jeux & Casinos"])
+    with col3:
+        focus = st.selectbox("Objectif d'Évaluation (GAFI)", ["Effectiveness - Efficacité Réelle (Immediate Outcomes 3 & 4)", "Technical Compliance - Arsenal Législatif (Recommandations du GAFI)"])
 
-    if app_mode == "Configuration":
-        st.header("🎯 Mutual Evaluation Preparation")
-        st.write("Configure the inspection scenario. The AI will generate a challenge based on OSINT and the FATF methodology.")
-        
-        with st.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                country = st.selectbox("Assessed Country", ["Luxembourg", "France", "United Kingdom", "Singapore", "United States", "UAE"])
-                sector = st.selectbox("Targeted Sector", SECTOR_TAXONOMY)
-            with col2:
-                io_key = st.selectbox("Immediate Outcome (IO)", list(IO_TAXONOMY.keys()))
-                io_desc = IO_TAXONOMY[io_key]
-                st.info(f"**Focus:** {io_desc}")
-
-        if st.button("🚀 Start Assessor Interview"):
-            st.session_state.current_scenario = {
-                "country": country,
-                "sector": sector,
-                "io": io_key,
-                "io_desc": io_desc
-            }
-            
-            # Prompt for the Assessor (The Challenger)
-            prompt_assessor = f"""
-            You are a strict and rigorous FATF assessor. You are evaluating the country {country} on {io_key} ({io_desc}).
-            Your focus is the following sector: {sector}.
-            Conduct a mental OSINT search regarding recent AML/CFT risks, scandals, or typologies in this country for this sector.
-            Ask a very precise, technical, and slightly challenging 'On-site visit' question to the NCA representative. 
-            Demand evidence of effectiveness (statistics, examples of enforcement), not just legislative framework.
-            Keep your answer short (maximum 4 sentences) and direct.
-            """
-            st.session_state.assessor_q = get_simulation_response(prompt_assessor)
-            
-            # Prompt for the Advisor (The Strategist)
-            prompt_advisor = f"""
-            You are the strategic advisor for the National Competent Authority (NCA). The FATF assessor just asked this question: '{st.session_state.assessor_q}'.
-            Analyze the question strictly through the lens of the FATF methodology for {io_key}. 
-            Provide 3 tactical tips on how the NCA representative should answer:
-            1. What specific statistical data or evidence should they prepare?
-            2. What key message should they deliver to demonstrate 'effectiveness' (Outcomes)?
-            3. What trap or defensive stance should they avoid in their response?
-            Do not provide or ask for actual confidential information. Be professional and actionable.
-            """
-            st.session_state.advisor_tips = get_simulation_response(prompt_advisor)
-            
-            st.session_state.step = "active"
-            st.rerun()
-
-    elif app_mode == "Active Simulation":
-        if "current_scenario" not in st.session_state:
-            st.warning("Please configure a scenario first in the 'Configuration' tab.")
-        else:
-            scen = st.session_state.current_scenario
-            st.subheader(f"Session: {scen['country']} | {scen['io']} | {scen['sector']}")
-            
-            # Display Assessor Output
-            with st.chat_message("user", avatar="🕵️"):
-                st.markdown("**FATF ASSESSOR** (Lead Evaluator)")
-                st.write(st.session_state.assessor_q)
-            
-            st.markdown("---")
-            
-            # Display Advisor Output
-            with st.chat_message("assistant", avatar="💡"):
-                st.markdown("**NCA ADVISOR** (Strategic Counsel)")
-                st.write(st.session_state.advisor_tips)
-                
-            if st.button("🔄 Generate Next Question"):
-                del st.session_state.current_scenario
+    if st.button("Démarrer l'Entretien On-Site 🚀", disabled=not api_key):
+        with st.spinner("L'évaluateur consulte les sources ouvertes et prépare son attaque..."):
+            question_data = fetch_assessor_question(country, sector, focus)
+            if question_data:
+                st.session_state.current_question = question_data
+                st.session_state.step = "interview"
+                st.session_state.user_choice = None
                 st.rerun()
 
-    elif app_mode == "Methodology Guide":
-        st.header("📚 Methodology Reference")
-        selected_io = st.selectbox("Consult an Immediate Outcome", list(IO_TAXONOMY.keys()))
-        st.write(f"### {selected_io} : {IO_TAXONOMY[selected_io]}")
-        st.info("According to the FATF Methodology, this IO evaluates whether the system is achieving the expected results (Outcomes). Effectiveness is measured by concrete results, not just technical compliance (laws on the books).")
+# --- ÉTAPE 2 : L'ENTRETIEN (LA QUESTION ET LE CHOIX) ---
+elif st.session_state.step == "interview":
+    q = st.session_state.current_question
+    
+    # Affichage du score en haut
+    st.sidebar.metric("Score de Conformité", f"{st.session_state.score}/{st.session_state.total_questions}")
+    
+    st.subheader("📍 Session d'évaluation face à l'Assessor")
+    
+    # Boîte de dialogue de l'évaluateur
+    st.info(f"**Évaluateur du GAFI :** \n\n *\"{q['question']}\"*")
+    
+    st.write("---")
+    st.write("**Choisissez votre stratégie de réponse (uniquement basée sur des données publiques) :**")
+    
+    # Formulaire pour éviter les rechargements intempestifs lors du clic sur un radio bouton
+    with st.form(key="qcm_form"):
+        options_formates = {
+            f"A: {q['options']['A']}": "A",
+            f"B: {q['options']['B']}": "B",
+            f"C: {q['options']['C']}": "C"
+        }
+        choix = st.radio("Options :", list(options_formates.keys()), index=0)
+        submit_button = st.form_submit_state = st.form_submit_button(label="Soumettre la réponse officielle 📝")
+        
+        if submit_button:
+            st.session_state.user_choice = options_formates[choix]
+            st.session_state.step = "feedback"
+            st.session_state.total_questions += 1
+            if st.session_state.user_choice == q['correct_option']:
+                st.session_state.score += 1
+            st.rerun()
 
-# --- FOOTER ---
-st.sidebar.markdown("---")
-st.sidebar.caption("Sovereign Readiness Tool - FATF Simulator v1.0")
+# --- ÉTAPE 3 : LE FEEDBACK ET LES STATISTIQUES RECHERCHÉES ---
+elif st.session_state.step == "feedback":
+    q = st.session_state.current_question
+    choix_utilisateur = st.session_state.user_choice
+    est_correct = choix_utilisateur == q['correct_option']
+    
+    st.sidebar.metric("Score de Conformité", f"{st.session_state.score}/{st.session_state.total_questions}")
+    
+    st.subheader("📊 Débriefing de l'Évaluateur")
+    
+    if est_correct:
+        st.success(f"✅ **Bonne Posture !** Vous avez choisi l'Option {choix_utilisateur}.")
+    else:
+        st.error(f"❌ **Posture Fragile.** Vous avez choisi l'Option {choix_utilisateur}. L'option attendue était la **{q['correct_option']}**.")
+        
+    st.markdown(f"### 💡 Analyse du GAFI :\n{q['explanation']}")
+    
+    # Section Clé : Injection des données réelles glanées sur le Web par l'IA
+    st.markdown("### 🌐 Éléments statistiques et OSINT trouvés en temps réel :")
+    st.warning(q['additional_data'])
+    
+    st.write("---")
+    
+    col_nav1, col_nav2 = st.columns(2)
+    with col_nav1:
+        if st.button("Prochaine Question de l'Assessor ➡️"):
+            with st.spinner("L'évaluateur rebondit sur un autre angle..."):
+                # On simule la continuité en relançant une recherche avec le même contexte
+                # Dans une version avancée, on pourrait passer l'historique au prompt
+                question_data = fetch_assessor_question(
+                    st.session_state.current_question.get('country', 'Luxembourg'),
+                    st.session_state.current_question.get('sector', 'Banques Privées'),
+                    st.session_state.current_question.get('focus', 'Effectiveness')
+                )
+                if question_data:
+                    st.session_state.current_question = question_data
+                    st.session_state.step = "interview"
+                    st.session_state.user_choice = None
+                    st.rerun()
+                    
+    with col_nav2:
+        if st.button("Modifier les paramètres / Quitter 🛑"):
+            st.session_state.step = "setup"
+            st.session_state.current_question = None
+            st.session_state.score = 0
+            st.session_state.total_questions = 0
+            st.rerun()
