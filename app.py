@@ -9,18 +9,43 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- GEMINI API INITIALIZATION ---
-# Retrieve the API key from Streamlit secrets (in production) or via the sidebar input
-api_key = st.sidebar.text_input("Google AI Studio (Gemini) API Key", type="password")
+# --- AUTHENTICATION (MOT DE PASSE) ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
 
-if api_key:
+# Si l'utilisateur n'est pas authentifié, on affiche l'écran de connexion et on bloque la suite
+if not st.session_state.authenticated:
+    st.title("🔒 Restricted Access")
+    st.write("Welcome to the FATF Assessor AI. Please enter the password to continue.")
+    
+    pwd = st.text_input("Password:", type="password")
+    
+    if st.button("Login"):
+        if pwd == "FATF2026":
+            st.session_state.authenticated = True
+            st.rerun()  # Recharge la page pour afficher l'application
+        else:
+            st.error("❌ Incorrect password.")
+            
+    st.stop()  # Empêche l'exécution du reste du code tant que le mot de passe n'est pas bon
+
+# =====================================================================
+# LA SUITE DU CODE NE S'EXÉCUTE QUE SI LE MOT DE PASSE EST CORRECT
+# =====================================================================
+
+# --- GEMINI API INITIALIZATION (VIA SECRETS) ---
+try:
+    # L'application cherche la clé dans le coffre-fort Streamlit
+    api_key = st.secrets["GEMINI_API_KEY"]
     genai.configure(api_key=api_key)
-else:
-    st.sidebar.warning("Please enter your Gemini API key to run the application.")
+except KeyError:
+    st.error("❌ ERROR: The API key 'GEMINI_API_KEY' is missing from Streamlit secrets.")
+    st.info("Please configure your secrets before running the application.")
+    st.stop()
 
 # --- SESSION STATE INITIALIZATION ---
 if "step" not in st.session_state:
-    st.session_state.step = "setup"  # Possible steps: setup, interview, feedback
+    st.session_state.step = "setup"
 if "current_question" not in st.session_state:
     st.session_state.current_question = None
 if "score" not in st.session_state:
@@ -29,45 +54,45 @@ if "total_questions" not in st.session_state:
     st.session_state.total_questions = 0
 if "user_choice" not in st.session_state:
     st.session_state.user_choice = None
+if "current_context" not in st.session_state:
+    st.session_state.current_context = {"country": "", "sector": "", "focus": ""}
 
 # --- AI CALL FUNCTION (WITH REAL-TIME WEB SEARCH) ---
 def fetch_assessor_question(country, sector, focus):
-    if not api_key:
-        return None
-    
-    # Model configuration with Web Search (Grounding) enabled
-    # and forcing the output format to JSON
     model = genai.GenerativeModel(
         model_name="gemini-1.5-flash",
-        tools="google_search"  # Enables real-time search (press, national reports, etc.)
+        tools="google_search"
     )
     
     prompt = f"""
-    You are a senior FATF (Financial Action Task Force) assessor conducting an On-Site Visit in the following country: {country}.
-    You are specifically evaluating the following sector: {sector}.
-    Your current main focus is: {focus}.
+    You are a senior FATF assessor conducting an On-Site Visit based strictly on the FATF Methodology for assessing technical compliance and effectiveness.
+    Evaluated Country: {country}.
+    Sector: {sector}.
+    Evaluation Focus: {focus}.
 
-    CONTEXT AND OPERATIONAL RESEARCH:
-    1. Conduct a real-time web search on regulatory news, recent financial scandals, FIU (Financial Intelligence Unit) reports, supervisory sanctions, or national/international press articles related to Anti-Money Laundering and Counter-Terrorist Financing (AML/CFT) for this specific country and sector.
-    2. Identify a concrete vulnerability or a frequent criticism regarding Effectiveness or Technical Compliance.
+    CONTEXT AND OPERATIONAL RESEARCH (Google Search):
+    1. Search the web for recent data, FIU annual reports, supervisory activity, sanctions, or press coverage related to AML/CFT for this sector in {country}.
+    2. Extract concrete statistics (e.g., number of STRs filed, onsite inspections conducted, total fines issued) or specific typologies to use in your assessment.
 
     TASK:
-    Generate an incisive and challenging question that you would ask the local authorities or professionals on-site.
-    Then, provide 3 realistic response options (A, B, C) based strictly on public data or typical institutional postures.
-    - One of the options MUST be the "ideal" response from the assessor's perspective (it provides evidence of effectiveness, statistics, or demonstrates proactive risk management).
-    - The other two MUST be insufficient (e.g., too focused on paper-based laws without proof of implementation, or too defensive).
+    1. Select a specific FATF Recommendation (if Technical Compliance) or a specific Immediate Outcome and its underlying Core Issue (if Effectiveness).
+    2. Generate an incisive question challenging the local authorities or professionals on that exact methodological point, using the real-world data you found to corner them.
+    3. Provide 3 realistic response options (A, B, C) using public data constraints.
+       - The correct option MUST demonstrate effectiveness (e.g., outcomes, mitigations, statistics) or technical compliance according to the FATF text.
+       - The incorrect options should represent common failings (e.g., relying solely on legislation without implementation, or citing irrelevant data).
 
     RESPOND ONLY IN THE FOLLOWING JSON FORMAT (without any surrounding text, without ```json tags):
     {{
-        "question": "The text of your assessor question, mentioning a specific fact or methodological requirement...",
+        "fatf_reference": "Explicit citation of the FATF standard used (e.g., 'Immediate Outcome 4, Core Issue 4.2' or 'Recommendation 10 - CDD').",
+        "question": "The assessor's question, embedding the specific FATF requirement and the real-world vulnerability or data point you found.",
         "options": {{
             "A": "Full text for option A",
             "B": "Full text for option B",
             "C": "Full text for option C"
         }},
         "correct_option": "A", 
-        "explanation": "Detailed explanation of why this option is the best according to FATF effectiveness criteria.",
-        "additional_data": "Real statistical data or complementary OSINT elements found during your web search for this country to enrich the answer."
+        "explanation": "Detailed explanation of why this option aligns best with the cited FATF methodology, explaining why the other postures fail the mutual evaluation standards.",
+        "additional_data": "Specific numbers, statistics, or open-source intelligence (OSINT) facts found during your web search to back up the assessor's challenge."
     }}
     """
     
@@ -76,7 +101,6 @@ def fetch_assessor_question(country, sector, focus):
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
-        # Clean and parse the JSON
         data = json.loads(response.text)
         return data
     except Exception as e:
@@ -99,8 +123,10 @@ if st.session_state.step == "setup":
     with col3:
         focus = st.selectbox("Evaluation Focus (FATF)", ["Effectiveness (Immediate Outcomes 3 & 4)", "Technical Compliance (FATF Recommendations)"])
 
-    if st.button("Start On-Site Interview 🚀", disabled=not api_key):
+    if st.button("Start On-Site Interview 🚀"):
         with st.spinner("The assessor is consulting open sources and preparing their approach..."):
+            st.session_state.current_context = {"country": country, "sector": sector, "focus": focus}
+            
             question_data = fetch_assessor_question(country, sector, focus)
             if question_data:
                 st.session_state.current_question = question_data
@@ -112,18 +138,13 @@ if st.session_state.step == "setup":
 elif st.session_state.step == "interview":
     q = st.session_state.current_question
     
-    # Display the score at the top of the sidebar
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    
     st.subheader("📍 Evaluation Session with the Assessor")
-    
-    # Assessor's dialogue box
+    st.caption(f"📘 **FATF Methodology Reference:** {q.get('fatf_reference', 'N/A')}")
     st.info(f"**FATF Assessor:** \n\n *\"{q['question']}\"*")
-    
     st.write("---")
     st.write("**Choose your response strategy (based purely on public data):**")
     
-    # Form to prevent unwanted reloads when clicking a radio button
     with st.form(key="qcm_form"):
         formatted_options = {
             f"A: {q['options']['A']}": "A",
@@ -148,7 +169,6 @@ elif st.session_state.step == "feedback":
     is_correct = user_choice == q['correct_option']
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    
     st.subheader("📊 Assessor Debriefing")
     
     if is_correct:
@@ -157,23 +177,17 @@ elif st.session_state.step == "feedback":
         st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
         
     st.markdown(f"### 💡 FATF Analysis:\n{q['explanation']}")
-    
-    # Key Section: Injecting real data gathered from the Web by the AI
     st.markdown("### 🌐 Real-time OSINT and statistical elements found:")
     st.warning(q['additional_data'])
-    
     st.write("---")
     
     col_nav1, col_nav2 = st.columns(2)
     with col_nav1:
         if st.button("Next Assessor Question ➡️"):
             with st.spinner("The assessor pivots to another angle..."):
-                # Simulating continuity by running a new search with the same context
-                question_data = fetch_assessor_question(
-                    st.session_state.current_question.get('country', 'Luxembourg'),
-                    st.session_state.current_question.get('sector', 'Private Banking'),
-                    st.session_state.current_question.get('focus', 'Effectiveness')
-                )
+                ctx = st.session_state.current_context
+                question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['focus'])
+                
                 if question_data:
                     st.session_state.current_question = question_data
                     st.session_state.step = "interview"
