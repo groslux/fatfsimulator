@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
 import json
-import re
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -52,25 +51,22 @@ FATF_RECS = [
     "R.39 - Extradition", "R.40 - Other forms of international cooperation"
 ]
 
-# --- 1. AUTHENTICATION (PASSWORD) ---
+# --- 1. AUTHENTICATION ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
     st.title("🔒 Restricted Access")
     st.write("Welcome to the FATF Assessor AI. Please enter the password to continue.")
-    
     with st.form("login_form"):
         pwd = st.text_input("Password:", type="password")
         submitted = st.form_submit_button("Login")
-        
         if submitted:
             if pwd == "FATF2026":
                 st.session_state.authenticated = True
                 st.rerun()
             else:
                 st.error("❌ Incorrect password.")
-                
     st.stop() 
 
 # --- 2. GEMINI API INITIALIZATION ---
@@ -95,31 +91,11 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. DYNAMIC MODEL SELECTION & AI CALL ---
+# --- 4. ENRICHED AI CALL FUNCTION ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # DYNAMIC SEARCH: Ask Google which models are actually allowed for your API key
-    selected_model_name = "models/gemini-1.5-flash" # Default fallback
-    try:
-        valid_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                valid_models.append(m.name)
-                
-        if valid_models:
-            # Prioritize 1.5-flash, then 1.5-pro, then 1.0-pro, then whatever is available
-            for preferred in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro']:
-                matches = [name for name in valid_models if preferred in name]
-                if matches:
-                    selected_model_name = matches[0]
-                    break
-            else:
-                selected_model_name = valid_models[0] # Grab the first working model if priorities fail
-    except Exception as e:
-        st.warning("Could not list models dynamically, attempting fallback...")
-
-    # Initialize the model with the guaranteed working name
-    model = genai.GenerativeModel(model_name=selected_model_name)
+    # Using 1.5-flash as it is fast, cheap, and excellent at strict JSON structure
+    model = genai.GenerativeModel(model_name="gemini-1.5-flash")
     
     prompt = f"""
     You are a highly demanding senior FATF assessor conducting an On-Site Visit based strictly on the official FATF Methodology.
@@ -128,49 +104,49 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     Evaluation Type: {eval_type}.
     Specific Focus: {specific_focus}.
 
-    CONTEXT:
-    Draw upon your extensive knowledge of AML/CFT typologies, known vulnerabilities for this specific sector, and the general risk profile of {country}.
+    CONTEXT & MINDSET:
+    You do not just ask generic questions. You base your questions on simulated "desktop research" you conducted before arriving on-site. You are looking for concrete statistics, implementation proof, and clear mitigation of specific typologies relevant to {country}.
 
     TASK:
-    1. Generate an incisive and challenging question directly targeting the core issues of {specific_focus}.
-    2. Ground the question in realistic scenarios, statistics, or common regulatory failings relevant to the chosen sector and country.
-    3. Provide 3 realistic response options (A, B, C) that a country's representative might give.
-       - The CORRECT option must demonstrate true {eval_type} according to the FATF text (e.g., proactive risk management, proven outcomes, or perfect legal alignment).
-       - The INCORRECT options should represent common FATF evaluation failings (e.g., relying solely on legislation without implementation, lack of resources, defensive but empty statements).
+    Generate a comprehensive assessment scenario in strict JSON format. You must provide:
+    1. The core issue (from the FATF methodology) you are targeting.
+    2. A simulated list of documents you "read" to prepare (e.g., NRA 2024, FIU Annual Report, mutual evaluation of a neighboring country, specific press articles).
+    3. The main challenging question.
+    4. Three response options (A, B, C) where only one demonstrates true effectiveness or compliance.
+    5. A detailed explanation of why the correct option satisfies the FATF standards.
+    6. Concrete statistical insights or typologies that back up your assessment.
+    7. 2 or 3 follow-up questions the assessment team would logically ask right after this discussion to drill deeper.
 
-    RESPOND EXCLUSIVELY IN VALID JSON FORMAT. Do not include Markdown blocks (like ```json). Just the raw JSON object:
+    RESPOND EXCLUSIVELY IN THE FOLLOWING EXACT JSON STRUCTURE (No markdown tags, just raw JSON):
     {{
-        "fatf_reference": "{specific_focus}",
-        "question": "The assessor's specific, challenging question...",
+        "core_issue": "Specific core issue or sub-criterion targeted...",
+        "documents_analyzed": ["Document 1", "Document 2", "Document 3"],
+        "question": "The main, challenging question from the assessor...",
         "options": {{
             "A": "Option A text",
             "B": "Option B text",
             "C": "Option C text"
         }},
-        "correct_option": "A", 
-        "explanation": "Detailed explanation citing the FATF methodology on why this option is correct.",
-        "additional_data": "A realistic example of a statistic, typology, or known risk relevant to this scenario."
+        "correct_option": "A",
+        "explanation": "Detailed explanation citing the FATF methodology...",
+        "statistical_insight": "A realistic, domain-specific statistic or typology (e.g., 'In 2023, only 2% of STRs led to a conviction...').",
+        "follow_up_questions": ["Follow-up question 1?", "Follow-up question 2?"]
     }}
     """
     
     try:
         response = model.generate_content(prompt)
-        # Manually clean up any markdown the model might accidentally include
+        # Clean up any potential markdown wrappers around the JSON
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(clean_text)
         return data
-        
     except Exception as e:
         st.error(f"Error communicating with AI: {e}")
-        st.info(f"Diagnostique: Le modèle utilisé était '{selected_model_name}'. Vérifiez que votre API Key a les droits sur ce modèle.")
-        if 'response' in locals() and hasattr(response, 'text'):
-             with st.expander("Voir la réponse brute de l'IA (Debug)"):
-                 st.write(response.text)
         return None
 
 # --- 5. UI: HOME & DESIGN ---
 st.title("⚖️ FATF Assessor AI - Professional Simulator")
-st.write("Train against a rigorous AI assessor utilizing the full FATF methodology.")
+st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, complete with simulated desktop research and statistical challenges.")
 
 # --- UI STEP 1: CONTEXT SETUP ---
 if st.session_state.step == "setup":
@@ -193,13 +169,11 @@ if st.session_state.step == "setup":
 
     st.write("---")
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
-        with st.spinner("The assessor is reviewing the methodology and preparing the scenario..."):
-            
+        with st.spinner("The assessment team is analyzing the NRA, FIU reports, and preparing their core questions..."):
             st.session_state.current_context = {
                 "country": country, "sector": sector, 
                 "eval_type": eval_type, "specific_focus": specific_focus
             }
-            
             question_data = fetch_assessor_question(country, sector, eval_type, specific_focus)
             if question_data:
                 st.session_state.current_question = question_data
@@ -212,10 +186,19 @@ elif st.session_state.step == "interview":
     q = st.session_state.current_question
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    st.subheader("📍 On-Site Interview Session")
-    st.caption(f"📘 **Methodology Focus:** {q.get('fatf_reference', 'N/A')}")
     
-    st.info(f"**FATF Assessor:** \n\n *\"{q['question']}\"*")
+    # Display the Assessor's background research
+    with st.sidebar.expander("📚 Assessor's Desktop Research", expanded=True):
+        st.write("**Methodology Focus:**")
+        st.caption(f"{st.session_state.current_context['specific_focus']}")
+        st.write("**Core Issue Evaluated:**")
+        st.caption(f"{q.get('core_issue', 'N/A')}")
+        st.write("**Documents Analyzed Prior to Visit:**")
+        for doc in q.get('documents_analyzed', []):
+            st.markdown(f"- {doc}")
+
+    st.subheader("📍 On-Site Interview Session")
+    st.info(f"**FATF Lead Assessor:** \n\n *\"{q['question']}\"*")
     st.write("---")
     st.write("**Choose your official response strategy:**")
     
@@ -243,22 +226,30 @@ elif st.session_state.step == "feedback":
     is_correct = user_choice == q['correct_option']
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
-    st.subheader("📊 Assessor Debriefing")
+    
+    st.subheader("📊 Assessor Debriefing & Findings")
     
     if is_correct:
         st.success(f"✅ **Strong Posture!** You selected Option {user_choice}.")
     else:
-        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected option was **{q['correct_option']}**.")
+        st.error(f"❌ **Weak Posture.** You selected Option {user_choice}. The expected answer was **{q['correct_option']}**.")
         
     st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
-    st.markdown("### 🌐 Contextual Insight:")
-    st.warning(q['additional_data'])
+    
+    # Enriched Statistical Feedback
+    st.warning(f"**📉 Statistical / Typological Reality Check:**\n\n{q.get('statistical_insight', 'N/A')}")
+    
+    # The Follow-up Questions (Crucial for FATF prep)
+    st.markdown("### 🗣️ Anticipated Follow-Up Questions from the Assessment Team:")
+    for fq in q.get('follow_up_questions', []):
+        st.markdown(f"> *\"{fq}\"*")
+        
     st.write("---")
     
     col_nav1, col_nav2 = st.columns(2)
     with col_nav1:
         if st.button("Next Question on this Topic ➡️", use_container_width=True):
-            with st.spinner("The assessor pivots to another angle..."):
+            with st.spinner("The assessor consults their notes for the next angle..."):
                 ctx = st.session_state.current_context
                 question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
                 if question_data:
