@@ -94,8 +94,8 @@ if "current_context" not in st.session_state:
 # --- 4. ENRICHED AI CALL WITH DYNAMIC MODEL SELECTION ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    # DYNAMIC SEARCH: Ask Google which models are actually allowed for your API key
-    selected_model_name = "gemini-pro" # Ultimate fallback
+    # DYNAMIC SEARCH: Determine the best allowed model
+    selected_model_name = "gemini-1.5-flash" 
     try:
         valid_models = []
         for m in genai.list_models():
@@ -103,14 +103,13 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
                 valid_models.append(m.name)
                 
         if valid_models:
-            # Prioritize models: flash first, then pro versions
             for preferred in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']:
                 matches = [name for name in valid_models if preferred in name]
                 if matches:
                     selected_model_name = matches[0]
                     break
     except Exception:
-        pass # Silently proceed with fallback if listing fails
+        pass 
 
     model = genai.GenerativeModel(model_name=selected_model_name)
     
@@ -122,22 +121,26 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     Specific Focus: {specific_focus}.
 
     CONTEXT & MINDSET:
-    You do not just ask generic questions. You base your questions on simulated "desktop research" you conducted before arriving on-site. You are looking for concrete statistics, implementation proof, and clear mitigation of specific typologies relevant to {country}.
+    You do not just ask generic questions. You base your questions on simulated "desktop research" you conducted before arriving on-site. 
+
+    CRITICAL ANTI-HALLUCINATION RULE: 
+    Do NOT invent or hallucinate specific numbers, statistics, or metrics inside the 3 options (A, B, C). The options must focus on qualitative methodologies, regulatory postures, or demonstrable actions.
 
     TASK:
     Generate a comprehensive assessment scenario in strict JSON format. You must provide:
     1. The core issue (from the FATF methodology) you are targeting.
-    2. A simulated list of documents you "read" to prepare (e.g., NRA 2024, FIU Annual Report, mutual evaluation of a neighboring country, specific press articles).
+    2. A simulated list of documents you "read" to prepare (e.g., NRA, FIU Report).
     3. The main challenging question.
-    4. Three response options (A, B, C) where only one demonstrates true effectiveness or compliance.
+    4. Three response options (A, B, C) where only one demonstrates true effectiveness or compliance based on principle.
     5. A detailed explanation of why the correct option satisfies the FATF standards.
-    6. Concrete statistical insights or typologies that back up your assessment.
-    7. 2 or 3 follow-up questions the assessment team would logically ask right after this discussion to drill deeper.
+    6. "statistical_insight": Provide a realistic, domain-specific statistic or typology for this country/sector based ONLY on your real pre-training knowledge.
+    7. "sources": An array of highly relevant sources with clickable URLs. Use official domains (e.g., https://www.fatf-gafi.org, World Bank, IMF, or the National FIU URL).
+    8. 2 or 3 follow-up questions the assessment team would logically ask right after this discussion.
 
     RESPOND EXCLUSIVELY IN THE FOLLOWING EXACT JSON STRUCTURE (No markdown tags, just raw JSON):
     {{
         "core_issue": "Specific core issue or sub-criterion targeted...",
-        "documents_analyzed": ["Document 1", "Document 2", "Document 3"],
+        "documents_analyzed": ["Document 1", "Document 2"],
         "question": "The main, challenging question from the assessor...",
         "options": {{
             "A": "Option A text",
@@ -146,14 +149,17 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         }},
         "correct_option": "A",
         "explanation": "Detailed explanation citing the FATF methodology...",
-        "statistical_insight": "A realistic, domain-specific statistic or typology (e.g., 'In 2023, only 2% of STRs led to a conviction...').",
+        "statistical_insight": "Real historical data or established typological trend...",
+        "sources": [
+            {{"title": "FATF Methodology", "url": "https://www.fatf-gafi.org/en/publications/Mutualevaluations/Fatf-methodology.html"}},
+            {{"title": "Relevant National/International Report", "url": "https://..."}}
+        ],
         "follow_up_questions": ["Follow-up question 1?", "Follow-up question 2?"]
     }}
     """
     
     try:
         response = model.generate_content(prompt)
-        # Clean up any potential markdown wrappers around the JSON
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(clean_text)
         return data
@@ -164,7 +170,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
 
 # --- 5. UI: HOME & DESIGN ---
 st.title("⚖️ FATF Assessor AI - Professional Simulator")
-st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, complete with simulated desktop research and statistical challenges.")
+st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, complete with simulated desktop research and qualitative challenges.")
 
 # --- UI STEP 1: CONTEXT SETUP ---
 if st.session_state.step == "setup":
@@ -214,6 +220,12 @@ elif st.session_state.step == "interview":
         st.write("**Documents Analyzed Prior to Visit:**")
         for doc in q.get('documents_analyzed', []):
             st.markdown(f"- {doc}")
+            
+        # NOUVEAU : Affichage des URLs cliquables dans les sources
+        if q.get('sources'):
+            st.write("**🔗 Sources & References:**")
+            for source in q.get('sources', []):
+                st.markdown(f"- [{source.get('title', 'Link')}]({source.get('url', '#')})")
 
     st.subheader("📍 On-Site Interview Session")
     st.info(f"**FATF Lead Assessor:** \n\n *\"{q['question']}\"*")
@@ -254,13 +266,18 @@ elif st.session_state.step == "feedback":
         
     st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
     
-    # Enriched Statistical Feedback
     st.warning(f"**📉 Statistical / Typological Reality Check:**\n\n{q.get('statistical_insight', 'N/A')}")
     
-    # The Follow-up Questions (Crucial for FATF prep)
     st.markdown("### 🗣️ Anticipated Follow-Up Questions from the Assessment Team:")
     for fq in q.get('follow_up_questions', []):
         st.markdown(f"> *\"{fq}\"*")
+        
+    # NOUVEAU : Rappel des sources à la fin du débriefing
+    if q.get('sources'):
+        st.write("---")
+        st.markdown("### 🔗 Reference Material")
+        for source in q.get('sources', []):
+            st.markdown(f"🌐 [{source.get('title', 'Reference Document')}]({source.get('url', '#')})")
         
     st.write("---")
     
