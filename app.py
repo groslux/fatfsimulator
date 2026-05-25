@@ -1,6 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 import json
+import random
+from duckduckgo_search import DDGS
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -91,16 +93,39 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. ENRICHED AI CALL WITH DYNAMIC MODEL SELECTION ---
+# --- 4. REAL-TIME OSINT FUNCTION (DUCKDUCKGO) ---
+def fetch_realtime_news(country, sector):
+    """Effectue une recherche silencieuse sur le web pour trouver des actualités récentes."""
+    # On crée une requête ciblée pour dénicher les problèmes
+    query = f"{country} {sector} (money laundering OR AML OR compliance OR fraud OR FATF OR sanction)"
+    news_snippets = []
+    news_context_for_ai = ""
+    
+    try:
+        with DDGS() as ddgs:
+            # On récupère les 3 meilleurs résultats
+            results = list(ddgs.text(query, max_results=3))
+            if results:
+                news_context_for_ai = "REAL-TIME WEB SEARCH RESULTS (Use these to challenge the user):\n"
+                for r in results:
+                    news_context_for_ai += f"- Title: {r['title']}\n  Snippet: {r['body']}\n  URL: {r['href']}\n\n"
+                    news_snippets.append({"title": r['title'], "url": r['href'], "snippet": r['body']})
+    except Exception as e:
+        # Si la recherche échoue (ex: rate limit), on retourne un contexte vide
+        pass 
+        
+    return news_context_for_ai, news_snippets
+
+# --- 5. ENRICHED AI CALL WITH DYNAMIC MODEL SELECTION & PYTHON SHUFFLING ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
+    # 1. On lance d'abord la recherche OSINT
+    news_text_for_ai, raw_news_list = fetch_realtime_news(country, sector)
+    
+    # 2. Configuration de l'IA
     selected_model_name = "gemini-1.5-flash" 
     try:
-        valid_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                valid_models.append(m.name)
-                
+        valid_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         if valid_models:
             for preferred in ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro']:
                 matches = [name for name in valid_models if preferred in name]
@@ -112,6 +137,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
 
     model = genai.GenerativeModel(model_name=selected_model_name)
     
+    # 3. Le Prompt enrichi avec l'actualité en temps réel
     prompt = f"""
     You are a highly demanding senior FATF assessor conducting an On-Site Visit based strictly on the official FATF Methodology.
     Evaluated Country: {country}.
@@ -119,36 +145,37 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     Evaluation Type: {eval_type}.
     Specific Focus: {specific_focus}.
 
-    CONTEXT & MINDSET:
-    You do not just ask generic questions. You base your questions on simulated "desktop research" you conducted before arriving on-site. 
+    {news_text_for_ai}
 
-    CRITICAL ANTI-HALLUCINATION & RANDOMIZATION RULES: 
-    1. Do NOT invent or hallucinate specific numbers inside the 3 options (A, B, C). The options must focus on qualitative methodologies or demonstrable actions.
-    2. You MUST randomly assign the correct answer to either A, B, or C. Do NOT always make it B. Distribute the correct answer evenly across your generations.
+    CONTEXT & MINDSET:
+    You do not just ask generic questions. You base your questions on simulated "desktop research" AND the real-time web search results provided above (if any). If there are recent negative press articles or sanctions in the search results, YOU MUST confront the user about them.
+
+    CRITICAL ANTI-HALLUCINATION RULE: 
+    Do NOT invent specific numbers inside the response options. The options must focus on qualitative methodologies or demonstrable actions.
 
     TASK:
     Generate a comprehensive assessment scenario in strict JSON format. You must provide:
     1. The core issue (from the FATF methodology) you are targeting.
     2. A simulated list of documents you "read" to prepare.
-    3. The main challenging question.
-    4. Three response options (A, B, C).
-    5. A detailed explanation of why the correct option satisfies the FATF standards.
-    6. "statistical_insight": Provide a realistic, domain-specific statistic or typology for this country/sector based ONLY on your real pre-training knowledge.
-    7. "statistical_source": Explicitly state the name of the official document or report where you found this statistic (e.g., "FATF Mutual Evaluation Report of [Country] 2023", "National Risk Assessment", etc.).
-    8. "sources": An array of highly relevant sources with clickable URLs.
-    9. 2 or 3 follow-up questions the assessment team would logically ask.
+    3. The main challenging question (incorporating the real-time news if relevant).
+    4. ONE explicitly correct answer (correct_answer).
+    5. TWO realistic but incorrect answers (incorrect_answers).
+    6. A detailed explanation of why the correct option satisfies the FATF standards.
+    7. "statistical_insight": Provide a realistic, domain-specific statistic or typology for this country/sector.
+    8. "statistical_source": Explicitly state the name of the official document or report where you found this statistic.
+    9. "sources": An array of highly relevant methodology sources with clickable URLs.
+    10. 2 or 3 follow-up questions the assessment team would logically ask.
 
-    RESPOND EXCLUSIVELY IN THE FOLLOWING EXACT JSON STRUCTURE (No markdown tags, just raw JSON):
+    RESPOND EXCLUSIVELY IN THE FOLLOWING EXACT JSON STRUCTURE:
     {{
         "core_issue": "Specific core issue or sub-criterion targeted...",
         "documents_analyzed": ["Document 1", "Document 2"],
         "question": "The main, challenging question from the assessor...",
-        "options": {{
-            "A": "Option A text",
-            "B": "Option B text",
-            "C": "Option C text"
-        }},
-        "correct_option": "Randomly choose A, B, or C here",
+        "correct_answer": "The perfectly compliant/effective response text...",
+        "incorrect_answers": [
+            "Realistic but flawed response 1...",
+            "Realistic but flawed response 2..."
+        ],
         "explanation": "Detailed explanation citing the FATF methodology...",
         "statistical_insight": "Real historical data or established typological trend...",
         "statistical_source": "Name of the report or document backing up the statistical insight...",
@@ -163,15 +190,37 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         response = model.generate_content(prompt)
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(clean_text)
+        
+        # PYTHON SHUFFLING LOGIC
+        correct_text = data['correct_answer']
+        all_options = [correct_text] + data['incorrect_answers']
+        random.shuffle(all_options)
+        
+        data['options'] = {
+            "A": all_options[0],
+            "B": all_options[1],
+            "C": all_options[2]
+        }
+        
+        if all_options[0] == correct_text:
+            data['correct_option'] = "A"
+        elif all_options[1] == correct_text:
+            data['correct_option'] = "B"
+        else:
+            data['correct_option'] = "C"
+            
+        # On attache les vrais articles de presse trouvés pour les afficher dans l'UI
+        data['realtime_news'] = raw_news_list
+            
         return data
+        
     except Exception as e:
         st.error(f"Error communicating with AI: {e}")
-        st.info(f"Model tried: {selected_model_name}")
         return None
 
-# --- 5. UI: HOME & DESIGN ---
+# --- 6. UI: HOME & DESIGN ---
 st.title("⚖️ FATF Assessor AI - Professional Simulator")
-st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, complete with simulated desktop research and qualitative challenges.")
+st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, complete with real-time OSINT and qualitative challenges.")
 
 # --- UI STEP 1: CONTEXT SETUP ---
 if st.session_state.step == "setup":
@@ -194,7 +243,7 @@ if st.session_state.step == "setup":
 
     st.write("---")
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
-        with st.spinner("The assessment team is analyzing the NRA, FIU reports, and preparing their core questions..."):
+        with st.spinner("The assessment team is analyzing the NRA, scraping real-time press articles, and preparing their core questions..."):
             st.session_state.current_context = {
                 "country": country, "sector": sector, 
                 "eval_type": eval_type, "specific_focus": specific_focus
@@ -212,19 +261,24 @@ elif st.session_state.step == "interview":
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
     
-    with st.sidebar.expander("📚 Assessor's Desktop Research", expanded=True):
+    with st.sidebar.expander("📚 Assessor's Desktop Research & OSINT", expanded=True):
         st.write("**Methodology Focus:**")
         st.caption(f"{st.session_state.current_context['specific_focus']}")
         st.write("**Core Issue Evaluated:**")
         st.caption(f"{q.get('core_issue', 'N/A')}")
+        
+        # NOUVEAU : Affichage des actualités en temps réel trouvées
+        if q.get('realtime_news'):
+            st.markdown("---")
+            st.write("🚨 **Real-Time Press Articles Analyzed:**")
+            for news in q.get('realtime_news', []):
+                st.markdown(f"- [{news['title']}]({news['url']})")
+                st.caption(f"_{news['snippet'][:150]}..._")
+            st.markdown("---")
+
         st.write("**Documents Analyzed Prior to Visit:**")
         for doc in q.get('documents_analyzed', []):
             st.markdown(f"- {doc}")
-            
-        if q.get('sources'):
-            st.write("**🔗 Sources & References:**")
-            for source in q.get('sources', []):
-                st.markdown(f"- [{source.get('title', 'Link')}]({source.get('url', '#')})")
 
     st.subheader("📍 On-Site Interview Session")
     st.info(f"**FATF Lead Assessor:** \n\n *\"{q['question']}\"*")
@@ -265,7 +319,6 @@ elif st.session_state.step == "feedback":
         
     st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
     
-    # NOUVEAU : Affichage de la source sous la statistique
     st.warning(f"**📉 Statistical / Typological Reality Check:**\n\n{q.get('statistical_insight', 'N/A')}\n\n*Source: {q.get('statistical_source', 'Knowledge Base')}*")
     
     st.markdown("### 🗣️ Anticipated Follow-Up Questions from the Assessment Team:")
@@ -283,7 +336,7 @@ elif st.session_state.step == "feedback":
     col_nav1, col_nav2 = st.columns(2)
     with col_nav1:
         if st.button("Next Question on this Topic ➡️", use_container_width=True):
-            with st.spinner("The assessor consults their notes for the next angle..."):
+            with st.spinner("The assessor scrapes the latest news and consults their notes for the next angle..."):
                 ctx = st.session_state.current_context
                 question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
                 if question_data:
