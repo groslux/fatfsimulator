@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import random
-from duckduckgo_search import DDGS
+import requests
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -53,23 +53,6 @@ FATF_RECS = [
     "R.39 - Extradition", "R.40 - Other forms of international cooperation"
 ]
 
-# --- EXPERT KNOWLEDGE BASE ---
-# Modifiez ou ajoutez ici les vrais cas (ex: Reporter.lu, scandales historiques) 
-# que les moteurs de recherche pourraient rater à cause des paywalls.
-EXPERT_KNOWLEDGE_BASE = {
-    "Luxembourg": {
-        "Banking": [
-            "L'affaire 'Danske Bank' a mis en lumière l'implication de succursales luxembourgeoises dans des montages de sociétés écrans baltes.",
-            "En 2023, la CSSF a infligé des amendes significatives à plusieurs banques privées pour des défaillances dans l'identification des UBO liés à des juridictions à haut risque.",
-            "Des rapports d'investigation locaux ont pointé du doigt la difficulté pour les banques de tracer les fonds issus de l'immobilier commercial étranger."
-        ],
-        "Securities & Investment Management": [
-            "Le secteur des fonds d'investissement luxembourgeois a été scruté pour son exposition indirecte aux oligarques sanctionnés suite au conflit en Ukraine.",
-            "La question de la valorisation des actifs illiquides et l'utilisation de Management Companies (ManCos) en cascade restent des points de vulnérabilité identifiés par le FMI."
-        ]
-    }
-}
-
 # --- 1. AUTHENTICATION ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -88,12 +71,12 @@ if not st.session_state.authenticated:
                 st.error("❌ Incorrect password.")
     st.stop() 
 
-# --- 2. GEMINI API INITIALIZATION ---
+# --- 2. API INITIALIZATIONS ---
 try:
-    api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=api_key)
-except KeyError:
-    st.error("❌ ERROR: The API key 'GEMINI_API_KEY' is missing from Streamlit secrets.")
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    SERPER_API_KEY = st.secrets["SERPER_API_KEY"]
+except KeyError as e:
+    st.error(f"❌ ERROR: Missing API key in secrets: {e}")
     st.stop()
 
 # --- 3. SESSION STATE INITIALIZATION ---
@@ -110,56 +93,57 @@ if "user_choice" not in st.session_state:
 if "current_context" not in st.session_state:
     st.session_state.current_context = {}
 
-# --- 4. DEEP OSINT SEARCH (EXPERT + PRESS + OFFICIAL REPORTS) ---
-def fetch_realtime_osint(country, sector):
-    """Combine la base de connaissances experte avec des recherches en temps réel."""
-    news_snippets = []
-    news_context_for_ai = ""
+# --- 4. ADVANCED SERPER OSINT ENGINE ---
+def fetch_serper_osint(country, sector):
+    """Effectue des recherches poussées via l'API Serper (Google Search & News)."""
+    headers = {
+        'X-API-KEY': SERPER_API_KEY,
+        'Content-Type': 'application/json'
+    }
     
-    # 1. Injection de la Base Experte
-    if country in EXPERT_KNOWLEDGE_BASE and sector in EXPERT_KNOWLEDGE_BASE[country]:
-        news_context_for_ai += "EXPERT KNOWLEDGE BASE (HIGH PRIORITY - USE THESE SPECIFIC CASES):\n"
-        for insight in EXPERT_KNOWLEDGE_BASE[country][sector]:
-            news_context_for_ai += f"- {insight}\n"
-            news_snippets.append({"title": "Expert Knowledge Base (Local Investigation)", "url": "#", "snippet": insight})
-        news_context_for_ai += "\n"
-
-    # 2. Requêtes Web (Presse et Institutions)
-    query_press = f'"{country}" "{sector}" (sanctions OR blanchiment OR "money laundering" OR amende OR fine OR fraud)'
-    query_institutions = f'"{country}" (FATF OR GAFI OR Moneyval OR IMF OR FMI OR AMLA OR "Financial Intelligence Unit") (rapport OR report OR evaluation OR AML)'
+    osint_context_for_ai = "--- REAL-TIME SERPER OSINT DATA ---\n\n"
+    all_found_links = []
     
+    # REQUÊTE 1 : Rapports Officiels (Google Search classique)
+    query_official = f'"{country}" (FATF OR GAFI OR Moneyval OR IMF OR FMI OR AMLA OR "Financial Intelligence Unit") (rapport OR report OR evaluation OR AML)'
     try:
-        with DDGS() as ddgs:
-            # Recherche presse (news)
-            results_press = list(ddgs.news(query_press, max_results=3))
-            # Recherche institutions (text)
-            results_institutions = list(ddgs.text(query_institutions, max_results=3))
-            
-            combined_results = results_press + results_institutions
-            
-            if combined_results:
-                news_context_for_ai += "REAL-TIME PRESS & OFFICIAL INSTITUTIONAL REPORTS:\n"
-                seen_urls = set()
-                for r in combined_results:
-                    url = r.get('url', r.get('href', '#'))
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        title = r.get('title', 'Unknown Title')
-                        snippet = r.get('body', r.get('snippet', 'No summary available'))
-                        
-                        news_context_for_ai += f"- Source: {title}\n  Summary: {snippet}\n  URL: {url}\n\n"
-                        news_snippets.append({"title": title, "url": url, "snippet": snippet})
-                        
+        res_off = requests.post('https://google.serper.dev/search', headers=headers, json={"q": query_official, "num": 4})
+        if res_off.status_code == 200:
+            organic_results = res_off.json().get('organic', [])
+            osint_context_for_ai += "[OFFICIAL INSTITUTIONAL SOURCES]\n"
+            for item in organic_results:
+                title = item.get('title', 'Unknown')
+                link = item.get('link', '#')
+                snippet = item.get('snippet', '')
+                osint_context_for_ai += f"- Title: {title}\n  Snippet: {snippet}\n  URL: {link}\n\n"
+                if link != '#':
+                    all_found_links.append({"title": title, "url": link, "type": "official"})
     except Exception as e:
-        # Erreur silencieuse si DuckDuckGo bloque (rate limit)
-        pass 
-        
-    return news_context_for_ai, news_snippets
+        pass
 
-# --- 5. ENRICHED AI CALL (ZERO HALLUCINATION) ---
+    # REQUÊTE 2 : Presse & Affaires locales/internationales (Google News)
+    query_press = f'"{country}" "{sector}" (sanctions OR blanchiment OR "money laundering" OR amende OR fine OR fraud OR "infraction primaire")'
+    try:
+        res_press = requests.post('https://google.serper.dev/news', headers=headers, json={"q": query_press, "num": 5})
+        if res_press.status_code == 200:
+            news_results = res_press.json().get('news', [])
+            osint_context_for_ai += "[LOCAL & INTERNATIONAL PRESS / NEWS]\n"
+            for item in news_results:
+                title = item.get('title', 'Unknown')
+                link = item.get('link', '#')
+                snippet = item.get('snippet', '')
+                osint_context_for_ai += f"- Title: {title}\n  Snippet: {snippet}\n  URL: {link}\n\n"
+                if link != '#':
+                    all_found_links.append({"title": title, "url": link, "type": "press"})
+    except Exception as e:
+        pass
+
+    return osint_context_for_ai, all_found_links
+
+# --- 5. ZERO-HALLUCINATION AI GENERATOR ---
 def fetch_assessor_question(country, sector, eval_type, specific_focus):
     
-    news_text_for_ai, raw_news_list = fetch_realtime_osint(country, sector)
+    osint_context, verified_links = fetch_serper_osint(country, sector)
     
     selected_model_name = "gemini-1.5-flash" 
     try:
@@ -176,41 +160,34 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
     model = genai.GenerativeModel(model_name=selected_model_name)
     
     prompt = f"""
-    You are a strict, highly demanding senior FATF assessor conducting an On-Site Visit.
+    You are a meticulous, zero-tolerance senior FATF assessor.
     Evaluated Country: {country}.
     Sector: {sector}.
     Evaluation Type: {eval_type}.
     Specific Focus: {specific_focus}.
 
-    {news_text_for_ai}
+    {osint_context}
 
-    CRITICAL ANTI-HALLUCINATION RULES:
-    1. NEVER invent, fabricate, or hallucinate document names, statistics, reports, or cases. 
-    2. If the 'EXPERT KNOWLEDGE BASE' or 'REAL-TIME PRESS & OFFICIAL INSTITUTIONAL REPORTS' sections above contain real reports or press articles, you MUST integrate their findings or tone into your question.
-    3. If the OSINT sections are empty, rely STRICTLY on standard FATF methodology and abstract principles. Do NOT make up fake national risk assessments.
-    4. The options (A, B, C) must focus on qualitative methodologies, regulatory postures, or governance, NOT fabricated numbers.
+    STRICT ANTI-HALLUCINATION PROTOCOL:
+    1. You MUST read the 'REAL-TIME SERPER OSINT DATA' provided above.
+    2. NEVER invent or hallucinate document names, statistics, reports, or cases. If you use a fact, it MUST come from the provided OSINT data.
+    3. The multiple-choice answers (A, B, C) must be purely qualitative (postures, regulatory actions, structural responses). DO NOT put any numbers or statistics in them.
 
     TASK:
-    Generate a comprehensive assessment scenario in strict JSON format. 
-    1. "core_issue": The sub-criterion from the FATF methodology you are targeting.
-    2. "question": The main assessor question. Integrate the real-time institutional reports or news if available.
-    3. "correct_answer": The perfectly compliant/effective response text.
-    4. "incorrect_answers": Two realistic but flawed responses.
-    5. "explanation": Detailed explanation citing the FATF methodology.
-    6. "risk_context": A summary of the real-world risk based ONLY on the provided OSINT context, or a general FATF typological risk if no OSINT is available. Do NOT hallucinate statistics.
-    7. "follow_up_questions": 2 follow-up questions to drill deeper.
-
+    Generate a comprehensive assessment scenario in strict JSON format.
+    
     RESPOND EXCLUSIVELY IN THE FOLLOWING EXACT JSON STRUCTURE:
     {{
-        "core_issue": "Targeted sub-criterion...",
-        "question": "The main assessor question...",
-        "correct_answer": "Compliant response...",
+        "core_issue": "Targeted sub-criterion or core issue from methodology...",
+        "osint_summary_official": "Write a concise, professional summary of the Official Institutional Sources found in the data above. If none, state 'No recent official reports flagged in the immediate search.'",
+        "osint_summary_press": "Write a concise, professional summary of the Press/News articles found in the data above. Highlight any specific scandals, fines, or typologies mentioned. If none, state 'No significant recent negative press flagged.'",
+        "question": "The main assessor question (must reference the OSINT findings if they are relevant to the specific focus)...",
+        "correct_answer": "The perfectly compliant qualitative response...",
         "incorrect_answers": [
-            "Flawed response 1...",
-            "Flawed response 2..."
+            "Flawed response option 1...",
+            "Flawed response option 2..."
         ],
-        "explanation": "Methodological explanation...",
-        "risk_context": "Real-world context based on official reports, OSINT or pure methodology...",
+        "explanation": "Methodological debriefing explaining why the correct answer meets FATF standards...",
         "follow_up_questions": ["Follow up 1?", "Follow up 2?"]
     }}
     """
@@ -220,7 +197,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         clean_text = response.text.replace('```json', '').replace('```', '').strip()
         data = json.loads(clean_text)
         
-        # PYTHON SHUFFLING LOGIC (True Randomness)
+        # PYTHON SHUFFLING LOGIC
         correct_text = data['correct_answer']
         all_options = [correct_text] + data['incorrect_answers']
         random.shuffle(all_options)
@@ -238,7 +215,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
         else:
             data['correct_option'] = "C"
             
-        data['realtime_news'] = raw_news_list
+        data['verified_links'] = verified_links
             
         return data
         
@@ -248,7 +225,7 @@ def fetch_assessor_question(country, sector, eval_type, specific_focus):
 
 # --- 6. UI: HOME & DESIGN ---
 st.title("⚖️ FATF Assessor AI - Professional Simulator")
-st.write("Train against a rigorous AI assessor utilizing the full FATF methodology, backed by Expert Knowledge and real-time OSINT (Press, FATF, IMF, World Bank, FIU). Zero hallucinations.")
+st.write("Train against a rigorous AI assessor utilizing advanced Serper OSINT (Google Search & News). Zero hallucinations.")
 
 # --- UI STEP 1: CONTEXT SETUP ---
 if st.session_state.step == "setup":
@@ -271,7 +248,7 @@ if st.session_state.step == "setup":
 
     st.write("---")
     if st.button("Start On-Site Interview 🚀", use_container_width=True):
-        with st.spinner("The assessment team is analyzing expert files, global press, and official FIU/IMF reports..."):
+        with st.spinner("Activating Serper Engine: Scouting official reports and deep-scanning local/international press..."):
             st.session_state.current_context = {
                 "country": country, "sector": sector, 
                 "eval_type": eval_type, "specific_focus": specific_focus
@@ -289,21 +266,18 @@ elif st.session_state.step == "interview":
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
     
-    with st.sidebar.expander("📚 Assessor's OSINT Briefing", expanded=True):
+    with st.sidebar.expander("💼 Assessor's OSINT Briefing", expanded=True):
         st.write("**Methodology Focus:**")
         st.caption(f"{st.session_state.current_context['specific_focus']}")
-        st.write("**Core Issue Evaluated:**")
+        st.write("**Targeted Core Issue:**")
         st.caption(f"{q.get('core_issue', 'N/A')}")
         
-        if q.get('realtime_news'):
-            st.markdown("---")
-            st.write("🚨 **Intelligence & Official Reports Analyzed:**")
-            for news in q.get('realtime_news', []):
-                st.markdown(f"- **[{news['title']}]({news['url']})**")
-                st.caption(f"_{news['snippet'][:150]}..._")
-        else:
-            st.markdown("---")
-            st.write("✅ _No specific recent reports or scandals detected in the live OSINT search. Assessor will rely on baseline methodology._")
+        st.divider()
+        st.write("🏛️ **Analysis of Official Sources:**")
+        st.info(q.get('osint_summary_official', 'No official summary provided.'))
+        
+        st.write("📰 **Analysis of Press & Typologies:**")
+        st.warning(q.get('osint_summary_press', 'No press summary provided.'))
 
     st.subheader("📍 On-Site Interview Session")
     st.info(f"**FATF Lead Assessor:** \n\n *\"{q['question']}\"*")
@@ -331,31 +305,45 @@ elif st.session_state.step == "interview":
 elif st.session_state.step == "feedback":
     q = st.session_state.current_question
     user_choice = st.session_state.user_choice
-    is_correct = user_choice == q['correct_option']
     
     st.sidebar.metric("Compliance Score", f"{st.session_state.score}/{st.session_state.total_questions}")
     
     st.subheader("📊 Assessor Debriefing & Findings")
     
-    if is_correct:
+    if user_choice == q['correct_option']:
         st.success(f"✅ **Strong Posture!** You selected Option {user_choice[-1] if user_choice else ''}.")
     else:
         st.error(f"❌ **Weak Posture.** The expected answer was **Option {q['correct_option']}**.")
         
     st.markdown(f"### 💡 FATF Methodology Analysis:\n{q['explanation']}")
     
-    st.warning(f"**📉 Risk Context (Official Data/Typology):**\n\n{q.get('risk_context', 'N/A')}")
-    
     st.markdown("### 🗣️ Anticipated Follow-Up Questions from the Assessment Team:")
     for fq in q.get('follow_up_questions', []):
         st.markdown(f"> *\"{fq}\"*")
+    
+    # Affichage des liens OSINT bruts utilisés par le modèle
+    if q.get('verified_links'):
+        st.write("---")
+        st.markdown("### 🔍 Raw OSINT Sources (Click to Verify)")
+        official_links = [l for l in q.get('verified_links', []) if l.get('type') == 'official']
+        press_links = [l for l in q.get('verified_links', []) if l.get('type') == 'press']
+        
+        if official_links:
+            st.write("**Official Institutions:**")
+            for link in official_links:
+                st.markdown(f"- 🏛️ [{link['title']}]({link['url']})")
+                
+        if press_links:
+            st.write("**News & Media:**")
+            for link in press_links:
+                st.markdown(f"- 📰 [{link['title']}]({link['url']})")
         
     st.write("---")
     
     col_nav1, col_nav2 = st.columns(2)
     with col_nav1:
         if st.button("Next Question on this Topic ➡️", use_container_width=True):
-            with st.spinner("The assessor searches for the latest official reports and consults their notes..."):
+            with st.spinner("Scouting data pools for new verified intersections..."):
                 ctx = st.session_state.current_context
                 question_data = fetch_assessor_question(ctx['country'], ctx['sector'], ctx['eval_type'], ctx['specific_focus'])
                 if question_data:
